@@ -13,51 +13,50 @@ const handleError = (res, error, message = "An error occurred") => {
   });
 };
 
-// Firebase Anonymous Sign In
-router.post("/anonymous", async (req, res) => {
-  try {
-    const { username } = req.body;
-
-    // Create anonymous user using utility function
-    const { uid, token } = await authUtils.createAnonymousUser(username);
-
-    res.status(200).json({
-      success: true,
-      token,
-      uid,
-      username: username || null,
-    });
-  } catch (error) {
-    if (error.message && error.message.includes("already taken")) {
-      return res.status(400).json({
-        success: false,
-        message: error.message,
-        error: "USERNAME_ALREADY_EXISTS",
-      });
-    }
-    handleError(res, error, "Failed to create anonymous user");
-  }
-});
-
-// Unified Wallet Authentication - updated to use wallet address directly
-router.post("/wallet/connect", async (req, res) => {
+// Unified Authentication (Handles both wallet and anonymous authentication)
+router.post("/authenticate", async (req, res) => {
   try {
     const { walletAddress, username } = req.body;
 
-    if (!walletAddress) {
+    // If wallet provided, check for username mismatch first
+    if (walletAddress && username) {
+      const existingUser = await authUtils.getUserByWallet(walletAddress);
+      if (existingUser && existingUser.username !== username) {
+        logger.info(
+          `User attempted to use wallet ${walletAddress} with username '${username}' but it's already linked to '${existingUser.username}'`
+        );
+
       return res.status(400).json({
         success: false,
-        message: "Wallet address is required",
-      });
+          message: `This wallet address is already linked to username. Please use the correct username or create a new account.`,
+          error: "WALLET_LINKED_TO_DIFFERENT_USERNAME",
+          existingUsername: existingUser.username || null,
+        });
+      }
     }
 
-    // No need to verify signature, just use the wallet address directly
+    // Use unified authentication function with optional wallet address
     const {
       uid,
       token,
       isNewUser,
       username: existingUsername,
+      authType,
     } = await authUtils.unifiedWalletAuth(walletAddress, username);
+
+    // Create appropriate success message based on auth type and whether it's a new user
+    let successMessage;
+    if (isNewUser) {
+      successMessage =
+        authType === "wallet"
+          ? "New user created with wallet"
+          : "New anonymous user created";
+    } else {
+      successMessage =
+        authType === "wallet"
+          ? "Authenticated with existing wallet"
+          : "Logged in with existing username";
+    }
 
     res.status(200).json({
       success: true,
@@ -65,26 +64,50 @@ router.post("/wallet/connect", async (req, res) => {
       uid,
       isNewUser,
       username: existingUsername || username || null,
-      message: isNewUser
-        ? "New user created with wallet"
-        : "Authenticated with existing wallet",
+      authType,
+      message: successMessage,
     });
   } catch (error) {
-    if (error.message && error.message.includes("already taken")) {
+    if (
+      error.message &&
+      error.message.includes("already linked to a different wallet")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "USERNAME_HAS_DIFFERENT_WALLET",
+      });
+    } else if (error.message && error.message.includes("already taken")) {
       return res.status(400).json({
         success: false,
         message: error.message,
         error: "USERNAME_ALREADY_EXISTS",
       });
+    } else if (
+      error.message &&
+      error.message.includes("Properties argument must be")
+    ) {
+      // Handle Firebase-specific error for invalid document updates
+      return res.status(400).json({
+        success: false,
+        message: "Invalid data provided for authentication",
+        error: "INVALID_DATA_FORMAT",
+      });
+    } else if (error.message && error.message.includes("Invalid user ID")) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "INVALID_USER_ID",
+      });
     }
-    handleError(res, error, "Failed to authenticate with wallet");
+    handleError(res, error, "Failed to authenticate user");
   }
 });
 
-// Link Wallet to Existing User - updated to use wallet address directly
+// Link or Update Wallet to Existing User
 router.post("/wallet/link", async (req, res) => {
   try {
-    const { walletAddress, uid } = req.body;
+    const { walletAddress, uid, currentWalletAddress } = req.body;
 
     if (!walletAddress || !uid) {
       return res.status(400).json({
@@ -93,12 +116,49 @@ router.post("/wallet/link", async (req, res) => {
       });
     }
 
-    // Link wallet to user directly without signature verification
+    // Check if the new wallet address is already linked to another user
+    const existingUserWithWallet = await authUtils.getUserByWallet(
+      walletAddress
+    );
+    if (existingUserWithWallet && existingUserWithWallet.uid !== uid) {
+      return res.status(400).json({
+        success: false,
+        message: "This wallet address is already linked to another account",
+        error: "WALLET_ALREADY_LINKED",
+      });
+    }
+
+    // Get the current user
+    const currentUser = await authUtils.getUserById(uid);
+    if (!currentUser) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+        error: "USER_NOT_FOUND",
+      });
+    }
+
+    // If user already has a wallet, verify the current wallet address matches
+    if (
+      currentUser.walletAddress &&
+      currentUser.walletAddress !== currentWalletAddress
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Current wallet address does not match the account's linked wallet",
+        error: "WALLET_MISMATCH",
+      });
+    }
+
+    // Update or link the wallet address
     await authUtils.linkWalletToUser(uid, walletAddress);
 
     res.status(200).json({
       success: true,
-      message: "Wallet connected successfully",
+      message: currentUser.walletAddress
+        ? "Wallet address updated successfully"
+        : "Wallet linked successfully",
       walletAddress: walletAddress,
     });
   } catch (error) {
@@ -106,9 +166,16 @@ router.post("/wallet/link", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: error.message,
+        error: "WALLET_ALREADY_LINKED",
+      });
+    } else if (error.message === "User not found") {
+      return res.status(404).json({
+        success: false,
+        message: error.message,
+        error: "USER_NOT_FOUND",
       });
     }
-    handleError(res, error, "Failed to connect wallet");
+    handleError(res, error, "Failed to update wallet address");
   }
 });
 
@@ -242,7 +309,7 @@ router.get("/username/available/:username", async (req, res) => {
   }
 });
 
-// Add endpoint to check wallet availability
+// Check wallet availability
 router.get("/wallet/available/:walletAddress", async (req, res) => {
   try {
     const { walletAddress } = req.params;
@@ -263,6 +330,152 @@ router.get("/wallet/available/:walletAddress", async (req, res) => {
     });
   } catch (error) {
     handleError(res, error, "Failed to check wallet availability");
+  }
+});
+
+// Add backward compatibility routes
+router.post("/anonymous", async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    // Forward to the unified authentication endpoint without wallet address
+    const {
+      uid,
+      token,
+      isNewUser,
+      username: existingUsername,
+      authType,
+    } = await authUtils.unifiedWalletAuth(null, username);
+
+    res.status(200).json({
+      success: true,
+      token,
+      uid,
+      isNewUser,
+      username: existingUsername || username || null,
+      authType,
+      message: isNewUser
+        ? "New anonymous user created"
+        : "Logged in with existing username",
+    });
+  } catch (error) {
+    if (error.message && error.message.includes("already taken")) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "USERNAME_ALREADY_EXISTS",
+      });
+    } else if (
+      error.message &&
+      error.message.includes("Properties argument must be")
+    ) {
+      // Handle Firebase-specific error for invalid document updates
+      return res.status(400).json({
+        success: false,
+        message: "Invalid data provided for authentication",
+        error: "INVALID_DATA_FORMAT",
+      });
+    } else if (error.message && error.message.includes("Invalid user ID")) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "INVALID_USER_ID",
+      });
+    }
+    handleError(res, error, "Failed to process anonymous user request");
+  }
+});
+
+router.post("/wallet/connect", async (req, res) => {
+  try {
+    const { walletAddress, username } = req.body;
+
+    if (!walletAddress) {
+      return res.status(400).json({
+        success: false,
+        message: "Wallet address is required",
+      });
+    }
+
+    // Check first if wallet exists with a different username
+    const existingUser = await authUtils.getUserByWallet(walletAddress);
+    if (existingUser && username && existingUser.username !== username) {
+      logger.info(
+        `Using existing account with username '${existingUser.username}' instead of requested '${username}'`
+      );
+
+      // Forward to unified authentication but with a note about username difference
+      const authResult = await authUtils.unifiedWalletAuth(walletAddress, null);
+
+      return res.status(200).json({
+        success: true,
+        token: authResult.token,
+        uid: authResult.uid,
+        isNewUser: false,
+        username: existingUser.username || null,
+        requestedUsername: username,
+        authType: "wallet",
+        usernameChanged: false,
+        message: `Authenticated with existing wallet. Note: This wallet address is already linked to username '${
+          existingUser.username || "none"
+        }', which differs from requested username '${username}'.`,
+      });
+    }
+
+    // Standard authentication flow
+    const {
+      uid,
+      token,
+      isNewUser,
+      username: existingUsername,
+      authType,
+    } = await authUtils.unifiedWalletAuth(walletAddress, username);
+
+  res.status(200).json({
+    success: true,
+      token,
+      uid,
+      isNewUser,
+      username: existingUsername || username || null,
+      authType,
+      message: isNewUser
+        ? "New user created with wallet"
+        : "Authenticated with existing wallet",
+    });
+  } catch (error) {
+    if (
+      error.message &&
+      error.message.includes("already linked to a different wallet")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "USERNAME_HAS_DIFFERENT_WALLET",
+      });
+    } else if (error.message && error.message.includes("already taken")) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "USERNAME_ALREADY_EXISTS",
+      });
+    } else if (
+      error.message &&
+      error.message.includes("Properties argument must be")
+    ) {
+      // Handle Firebase-specific error for invalid document updates
+      return res.status(400).json({
+        success: false,
+        message: "Invalid data provided for authentication",
+        error: "INVALID_DATA_FORMAT",
+      });
+    } else if (error.message && error.message.includes("Invalid user ID")) {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "INVALID_USER_ID",
+      });
+    }
+    handleError(res, error, "Failed to authenticate with wallet");
   }
 });
 

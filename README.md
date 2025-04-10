@@ -1,12 +1,11 @@
 # Web3 Authentication Server
 
-A Node.js/Express server that handles authentication through Firebase anonymous login and wallet connection.
+A Node.js/Express server that handles authentication through Firebase and wallet connection in a unified approach.
 
 ## Features
 
-- Firebase Anonymous Authentication (with optional username)
-- Wallet Address Authentication (direct flow without signature verification)
-- Wallet linking to anonymous accounts
+- Unified Authentication System (supports both wallet and anonymous authentication)
+- Wallet linking to existing accounts
 - Username management with uniqueness validation
 - Secure API endpoints
 - Error handling middleware
@@ -48,45 +47,68 @@ A Node.js/Express server that handles authentication through Firebase anonymous 
 
 ## Authentication Procedures
 
-### 1. Anonymous Sign-in (Optional Username)
+### 1. Unified Authentication (with or without wallet)
 
 ```javascript
-// Sign in anonymously with optional username
-const signInAnonymously = async (username = null) => {
+// Authenticate with unified endpoint (with or without wallet)
+const authenticate = async (walletAddress = null, username = null) => {
   try {
-    const response = await fetch("http://localhost:3589/api/auth/anonymous", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ username }),
-    });
+    const response = await fetch(
+      "http://localhost:3589/api/auth/authenticate",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          walletAddress, // Optional - omit for anonymous auth
+          username, // Optional
+        }),
+      }
+    );
 
     const data = await response.json();
 
     if (!response.ok) {
       if (data.error === "USERNAME_ALREADY_EXISTS") {
         console.error("Username already exists:", data.message);
-        // Handle username already exists error
+        return { error: data.error, message: data.message };
+      } else if (data.error === "USERNAME_HAS_DIFFERENT_WALLET") {
+        console.error("Username has different wallet:", data.message);
         return { error: data.error, message: data.message };
       }
-      throw new Error(data.message || "Failed to sign in anonymously");
+      throw new Error(data.message || "Failed to authenticate");
     }
 
-    const { uid, token, username: responseUsername } = data;
-    // Store uid and token for later use
-    return { uid, token, username: responseUsername };
+    const {
+      uid,
+      token,
+      username: responseUsername,
+      authType,
+      isNewUser,
+    } = data;
+    return { uid, token, username: responseUsername, authType, isNewUser };
   } catch (error) {
-    console.error("Error signing in anonymously:", error);
+    console.error("Error authenticating:", error);
     throw error;
   }
 };
+
+// For anonymous authentication only
+const signInAnonymously = async (username = null) => {
+  return authenticate(null, username);
+};
+
+// For wallet authentication
+const connectWallet = async (walletAddress, username = null) => {
+  return authenticate(walletAddress, username);
+};
 ```
 
-### 2. Link Wallet to Existing Anonymous Account
+### 2. Link Wallet to Existing Account
 
 ```javascript
-// Link wallet to an existing anonymous account
+// Link wallet to an existing account
 const linkWallet = async (uid, walletAddress) => {
   // Send to backend
   const response = await fetch("http://localhost:3589/api/auth/wallet/link", {
@@ -96,7 +118,7 @@ const linkWallet = async (uid, walletAddress) => {
     },
     body: JSON.stringify({
       walletAddress,
-      uid, // From anonymous sign-in
+      uid, // From previous authentication
     }),
   });
 
@@ -104,62 +126,17 @@ const linkWallet = async (uid, walletAddress) => {
 };
 ```
 
-### 3. Unified Wallet Authentication (Login or Create)
-
-```javascript
-// Authenticate with wallet (login existing or create new)
-const connectWallet = async (walletAddress, username = null) => {
-  try {
-    // Send to backend
-    const response = await fetch(
-      "http://localhost:3589/api/auth/wallet/connect",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          walletAddress,
-          username, // Optional
-        }),
-      }
-    );
-
-    const {
-      uid,
-      token,
-      isNewUser,
-      username: responseUsername,
-    } = await response.json();
-    // Store uid and token for later use
-    return { uid, token, isNewUser, username: responseUsername };
-  } catch (error) {
-    console.error("Error authenticating with wallet:", error);
-    throw error;
-  }
-};
-```
-
 ## API Endpoints
 
 ### Authentication
 
-- `POST /api/auth/anonymous`
+- `POST /api/auth/authenticate`
 
-  - Creates an anonymous user and returns a custom token
-  - Request body (optional): `{ username: string }`
-  - Response: `{ success: true, token: string, uid: string, username: string|null }`
+  - Unified authentication endpoint for both wallet and anonymous authentication
+  - Request body: `{ walletAddress?: string, username?: string }`
+  - Response: `{ success: true, token: string, uid: string, isNewUser: boolean, username: string|null, authType: string, message: string }`
   - Error responses:
-    - `400 Bad Request`: If username already exists
-    - `500 Internal Server Error`: For other errors
-
-- `POST /api/auth/wallet/connect`
-
-  - Unified wallet authentication endpoint (sign in or create new)
-  - Request body: `{ walletAddress: string, username?: string }`
-  - Response: `{ success: true, token: string, uid: string, isNewUser: boolean, username: string|null, message: string }`
-  - Error responses:
-    - `400 Bad Request`: If username already exists
+    - `400 Bad Request`: If username already exists or is linked to a different wallet
     - `500 Internal Server Error`: For other errors
 
 - `POST /api/auth/wallet/link`
@@ -167,6 +144,10 @@ const connectWallet = async (walletAddress, username = null) => {
   - Links a wallet to an existing user account
   - Request body: `{ walletAddress: string, uid: string }`
   - Response: `{ success: true, message: string, walletAddress: string }`
+  - Error responses:
+    - `400 Bad Request`: If wallet is already linked to another user or user already has a different wallet
+    - `404 Not Found`: If user not found
+    - `500 Internal Server Error`: For other errors
 
 - `POST /api/auth/username`
 
@@ -197,47 +178,54 @@ const connectWallet = async (walletAddress, username = null) => {
   - Checks if a wallet address is available
   - Response: `{ success: true, available: boolean }`
 
+## Backward Compatibility
+
+For backward compatibility, the following endpoints are still supported but redirect to the new unified authentication system:
+
+- `POST /api/auth/anonymous` - For anonymous authentication (no wallet)
+- `POST /api/auth/wallet/connect` - For wallet authentication
+
+We recommend using the new `/api/auth/authenticate` endpoint for new integrations.
+
 ## Authentication Flows
 
-### 1. Anonymous Flow (Optional Username)
+### 1. Anonymous Flow
 
-1. User signs in anonymously
+1. User authenticates without a wallet address
 2. Optionally provides a username
 3. Receives `uid` and `token`
 4. Can later link a wallet using the `uid`
 
-### 2. Wallet Connection Flow
+### 2. Wallet Authentication Flow
 
-1. User connects their wallet on the frontend
-2. Frontend sends the wallet address to the server
-3. Server checks if wallet exists
+1. User authenticates with a wallet address
+2. Server checks if wallet address exists
    - If exists: Logs in the user
    - If not: Creates new account
-4. Returns `uid`, `token`, and `isNewUser` flag
+3. Returns `uid`, `token`, and `isNewUser` flag
 
 ### 3. Hybrid Flow
 
-1. User starts with anonymous account
+1. User starts without a wallet (anonymous authentication)
 2. Later links their wallet
 3. Account becomes non-anonymous
 
 ## Key Changes in Recent Updates
 
-1. **Removed @solana/web3.js Dependency**: The backend no longer depends on Solana's web3.js library as wallet management is handled on the frontend.
+1. **Unified Authentication System**: Merged anonymous and wallet authentication into a single, flexible endpoint:
 
-2. **Simplified Authentication Flow**: Wallet authentication now uses direct wallet addresses without needing signature verification:
+   - Simplifies integration for developers
+   - Consistent response format for all authentication methods
+   - Improved security and user identification
 
-   - Frontend is responsible for connecting to wallets and obtaining addresses
-   - Backend only needs the wallet address to authenticate or create users
+2. **Permanent Wallet-Username Association**:
 
-3. **Unique User Identification**: Implemented checks for both username and wallet address:
+   - Once a username is linked to a wallet, that association cannot be changed
+   - Prevents security issues from changing wallet addresses
 
-   - Before creating a new account, the system checks if the wallet address or username already exists
-   - If a user already exists with that wallet, they are signed in rather than creating a duplicate account
-
-4. **New Availability Endpoints**: Added endpoints to check if usernames or wallet addresses are already taken:
-   - `GET /api/auth/username/available/:username`
-   - `GET /api/auth/wallet/available/:walletAddress`
+3. **Improved Username Handling**:
+   - When a user tries to authenticate with an existing username, they're logged in instead of seeing an error
+   - Prevents duplicate accounts with the same username
 
 ## Firestore Security Rules
 

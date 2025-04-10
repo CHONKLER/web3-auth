@@ -52,11 +52,46 @@ const isWalletExists = async (walletAddress) => {
  */
 const createAnonymousUser = async (username = null) => {
   try {
-    // Check if username exists if provided
+    // Check if username exists and get the user if it does
     if (username) {
-      const usernameExists = await isUsernameExists(username);
-      if (usernameExists) {
-        throw new Error(`Username '${username}' is already taken`);
+      // Log for debugging
+      logger.info(`Checking if username ${username} exists...`);
+
+      const existingUser = await getUserByUsername(username);
+
+      // Log for debugging
+      logger.info(
+        `Existing user for username ${username}: ${
+          existingUser ? existingUser.uid : "none"
+        }`
+      );
+
+      if (existingUser) {
+        // User with this username already exists, generate a token for them
+        const customToken = await admin
+          .auth()
+          .createCustomToken(existingUser.uid || existingUser.id);
+
+        // Update last active timestamp
+        const db = admin.firestore();
+        await db
+          .collection("users")
+          .doc(existingUser.uid || existingUser.id)
+          .update({
+            lastActive: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+        logger.info(
+          `User logged in with existing username: ${username}, uid: ${
+            existingUser.uid || existingUser.id
+          }`
+        );
+        return {
+          uid: existingUser.uid || existingUser.id,
+          token: customToken,
+          username: existingUser.username,
+          isExistingUser: true,
+        };
       }
     }
 
@@ -83,7 +118,12 @@ const createAnonymousUser = async (username = null) => {
         username ? ", username: " + username : ""
       }`
     );
-    return { uid: userRecord.uid, token: customToken, username };
+    return {
+      uid: userRecord.uid,
+      token: customToken,
+      username,
+      isExistingUser: false,
+    };
   } catch (error) {
     logger.error("Error creating anonymous user:", error);
     throw error;
@@ -91,45 +131,160 @@ const createAnonymousUser = async (username = null) => {
 };
 
 /**
- * Unified wallet authentication - either connects a wallet to create/login a user
- * @param {string} walletAddress - The wallet address
- * @param {string} username - Optional username for new users
- * @returns {Promise<{uid: string, token: string, isNewUser: boolean, username: string}>} User data and token
+ * Get a user by their username
+ * @param {string} username - The username
+ * @returns {Promise<object|null>} The user document or null if not found
  */
-const unifiedWalletAuth = async (walletAddress, username = null) => {
+const getUserByUsername = async (username) => {
+  if (!username) return null;
+
   try {
-    if (!walletAddress) {
-      throw new Error("Wallet address is required");
+    const db = admin.firestore();
+    const usersRef = db.collection("users");
+    const snapshot = await usersRef
+      .where("username", "==", username)
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      return null;
     }
 
-    const db = admin.firestore();
+    return { ...snapshot.docs[0].data(), id: snapshot.docs[0].id };
+  } catch (error) {
+    logger.error(`Error getting user by username: ${username}`, error);
+    throw error;
+  }
+};
 
-    // Check if a user with this wallet already exists
-    const existingUser = await getUserByWallet(walletAddress);
+/**
+ * Unified authentication - handles both wallet and anonymous authentication
+ * @param {string} walletAddress - Optional wallet address for wallet auth
+ * @param {string} username - Optional username for new users
+ * @returns {Promise<{uid: string, token: string, isNewUser: boolean, username: string, authType: string}>} User data and token
+ */
+const unifiedWalletAuth = async (walletAddress = null, username = null) => {
+  try {
+    const db = admin.firestore();
+    let existingUser = null;
+    let isAnonymous = !walletAddress;
+
+    // If wallet provided, check if a user with this wallet already exists
+    if (walletAddress) {
+      existingUser = await getUserByWallet(walletAddress);
+
+      logger.info(
+        `Existing user for wallet ${walletAddress}: ${
+          existingUser ? existingUser.uid || existingUser.id : "none"
+        }`
+      );
+
+      // If user exists with this wallet, we use that account regardless of username provided
+      if (existingUser) {
+        // If a different username was provided, we log it but don't try to update anything
+        if (username && existingUser.username !== username) {
+          logger.info(
+            `User with wallet ${walletAddress} exists with username '${
+              existingUser.username || "none"
+            }' instead of requested '${username}'. Using existing account without changes.`
+          );
+        }
+
+        // User exists, generate a token for them
+        const userId = existingUser.uid || existingUser.id;
+
+        // Make sure userId is a valid string to avoid Firebase errors
+        if (!userId || typeof userId !== "string") {
+          throw new Error(`Invalid user ID: ${userId}`);
+        }
+
+        const customToken = await admin.auth().createCustomToken(userId);
+
+        // Just update last active timestamp - don't touch any other fields
+        await db.collection("users").doc(userId).update({
+          lastActive: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        logger.info(
+          `User authenticated with wallet: ${walletAddress}, uid: ${userId}`
+        );
+
+        return {
+          uid: userId,
+          token: customToken,
+          isNewUser: false,
+          username: existingUser.username || null,
+          authType: "wallet",
+        };
+      }
+    }
+
+    // If user not found by wallet (or no wallet) but username is provided, check if user exists by username
+    if (!existingUser && username) {
+      existingUser = await getUserByUsername(username);
+
+      logger.info(
+        `Existing user for username ${username}: ${
+          existingUser ? existingUser.uid || existingUser.id : "none"
+        }`
+      );
+
+      // If a user with the username exists and wallet is provided, check wallet compatibility
+      if (existingUser && walletAddress) {
+        if (existingUser.walletAddress) {
+          // User already has a wallet, don't allow changing it
+          throw new Error(
+            `Username '${username}' is already linked to a different wallet address`
+          );
+        } else {
+          // First time linking a wallet to this username
+          const userId = existingUser.uid || existingUser.id;
+          await db.collection("users").doc(userId).update({
+            walletAddress: walletAddress,
+            isAnonymous: false,
+            lastActive: admin.firestore.FieldValue.serverTimestamp(),
+            walletLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          // Refresh user data after update
+          existingUser = await getUserById(userId);
+        }
+      }
+    }
 
     if (existingUser) {
       // User exists, generate a token for them
-      const customToken = await admin
-        .auth()
-        .createCustomToken(existingUser.uid);
+      const userId = existingUser.uid || existingUser.id;
+
+      // Make sure userId is a valid string to avoid Firebase errors
+      if (!userId || typeof userId !== "string") {
+        throw new Error(`Invalid user ID: ${userId}`);
+      }
+
+      const customToken = await admin.auth().createCustomToken(userId);
 
       // Update last active timestamp
-      await db.collection("users").doc(existingUser.uid).update({
+      await db.collection("users").doc(userId).update({
         lastActive: admin.firestore.FieldValue.serverTimestamp(),
       });
 
       logger.info(
-        `User authenticated with wallet: ${walletAddress}, uid: ${existingUser.uid}`
+        `User authenticated ${
+          walletAddress ? `with wallet: ${walletAddress}` : "anonymously"
+        }, uid: ${userId}`
       );
+
       return {
-        uid: existingUser.uid,
+        uid: userId,
         token: customToken,
         isNewUser: false,
         username: existingUser.username || null,
+        authType: walletAddress ? "wallet" : "anonymous",
       };
     }
 
-    // Check if username exists if provided
+    // No user found, create a new one
+    // Check username uniqueness if username is provided
     if (username) {
       const usernameExists = await isUsernameExists(username);
       if (usernameExists) {
@@ -137,83 +292,95 @@ const unifiedWalletAuth = async (walletAddress, username = null) => {
       }
     }
 
-    // No user found with this wallet, create a new one
+    // Create a new user
     const userRecord = await admin.auth().createUser();
 
     // Create user document in Firestore
-    await db.collection("users").doc(userRecord.uid).set({
+    const userData = {
       uid: userRecord.uid,
       username: username,
-      walletAddress: walletAddress,
-      isAnonymous: false,
+      isAnonymous: isAnonymous,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
-      walletLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    };
+
+    // Only add wallet-related fields if a wallet is provided
+    if (walletAddress) {
+      userData.walletAddress = walletAddress;
+      userData.walletLinkedAt = admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    await db.collection("users").doc(userRecord.uid).set(userData);
 
     // Generate custom token
     const customToken = await admin.auth().createCustomToken(userRecord.uid);
 
     logger.info(
-      `New user created with wallet: ${walletAddress}, uid: ${userRecord.uid}${
-        username ? ", username: " + username : ""
-      }`
+      `New user created ${
+        walletAddress ? `with wallet: ${walletAddress}` : "anonymously"
+      }, uid: ${userRecord.uid}${username ? ", username: " + username : ""}`
     );
+
     return {
       uid: userRecord.uid,
       token: customToken,
       isNewUser: true,
       username: username,
+      authType: walletAddress ? "wallet" : "anonymous",
     };
   } catch (error) {
-    logger.error(`Error authenticating with wallet ${walletAddress}:`, error);
+    logger.error(
+      `Error authenticating user${
+        walletAddress ? ` with wallet ${walletAddress}` : ""
+      }:`,
+      error
+    );
     throw error;
   }
 };
 
 /**
- * Link a wallet to a user account
+ * Link or update wallet address to user
  * @param {string} uid - The user ID
  * @param {string} walletAddress - The wallet address
  * @returns {Promise<boolean>} Success status
  */
 const linkWalletToUser = async (uid, walletAddress) => {
   try {
-    if (!walletAddress) {
-      throw new Error("Wallet address is required");
+    // Get the user document
+    const db = admin.firestore();
+    const userRef = db.collection("users").doc(uid);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      throw new Error("User not found");
     }
 
-    // Check if wallet is already linked to another user
-    const db = admin.firestore();
+    const userData = userDoc.data();
+
+    // Check if the wallet is already linked to another user
     const walletQuery = await db
       .collection("users")
       .where("walletAddress", "==", walletAddress)
       .get();
 
     if (!walletQuery.empty) {
-      const existingUser = walletQuery.docs[0].data();
-      if (existingUser.uid !== uid) {
-        logger.warn(
-          `Wallet ${walletAddress} already linked to user ${existingUser.uid}`
-        );
+      const existingUser = walletQuery.docs[0];
+      if (existingUser.id !== uid) {
         throw new Error("Wallet already linked to another user");
       }
-      // Wallet already linked to this user, nothing to do
-      return true;
     }
 
-    // Update user document with wallet info
-    await db.collection("users").doc(uid).update({
-      walletAddress: walletAddress,
-      isAnonymous: false,
+    // Update the user document with the new wallet address
+    await userRef.update({
+      walletAddress,
       walletLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    logger.info(`Wallet ${walletAddress} linked to user ${uid}`);
-    return true;
+    return { success: true };
   } catch (error) {
-    logger.error(`Error linking wallet to user ${uid}:`, error);
+    logger.error("Error linking wallet to user:", error);
     throw error;
   }
 };
@@ -268,7 +435,7 @@ const getUserByWallet = async (walletAddress) => {
       return null;
     }
 
-    return snapshot.docs[0].data();
+    return { ...snapshot.docs[0].data(), id: snapshot.docs[0].id };
   } catch (error) {
     logger.error(`Error getting user by wallet: ${walletAddress}`, error);
     throw error;
@@ -308,7 +475,7 @@ const getUserById = async (uid) => {
       return null;
     }
 
-    return doc.data();
+    return { ...doc.data(), id: doc.id };
   } catch (error) {
     logger.error(`Error getting user by ID: ${uid}`, error);
     throw error;
@@ -323,6 +490,7 @@ module.exports = {
   linkWalletToUser,
   updateUsername,
   getUserByWallet,
+  getUserByUsername,
   updateUserLastActive,
   getUserById,
 };
