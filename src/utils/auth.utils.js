@@ -1,5 +1,4 @@
 const admin = require("firebase-admin");
-const { PublicKey } = require("@solana/web3.js");
 const logger = require("./logger");
 
 /**
@@ -20,6 +19,28 @@ const isUsernameExists = async (username) => {
     return !snapshot.empty;
   } catch (error) {
     logger.error(`Error checking if username exists: ${username}`, error);
+    throw error;
+  }
+};
+
+/**
+ * Check if a wallet address already exists in the database
+ * @param {string} walletAddress - Wallet address to check
+ * @returns {Promise<boolean>} True if wallet address exists, false otherwise
+ */
+const isWalletExists = async (walletAddress) => {
+  if (!walletAddress) return false;
+
+  try {
+    const db = admin.firestore();
+    const usersRef = db.collection("users");
+    const snapshot = await usersRef
+      .where("walletAddress", "==", walletAddress)
+      .limit(1)
+      .get();
+    return !snapshot.empty;
+  } catch (error) {
+    logger.error(`Error checking if wallet exists: ${walletAddress}`, error);
     throw error;
   }
 };
@@ -71,19 +92,20 @@ const createAnonymousUser = async (username = null) => {
 
 /**
  * Unified wallet authentication - either connects a wallet to create/login a user
- * @param {string} publicKey - The Solana wallet public key
+ * @param {string} walletAddress - The wallet address
  * @param {string} username - Optional username for new users
  * @returns {Promise<{uid: string, token: string, isNewUser: boolean, username: string}>} User data and token
  */
-const unifiedWalletAuth = async (publicKey, username = null) => {
+const unifiedWalletAuth = async (walletAddress, username = null) => {
   try {
-    // Validate public key format
-    new PublicKey(publicKey);
+    if (!walletAddress) {
+      throw new Error("Wallet address is required");
+    }
 
     const db = admin.firestore();
 
     // Check if a user with this wallet already exists
-    const existingUser = await getUserByWallet(publicKey);
+    const existingUser = await getUserByWallet(walletAddress);
 
     if (existingUser) {
       // User exists, generate a token for them
@@ -97,7 +119,7 @@ const unifiedWalletAuth = async (publicKey, username = null) => {
       });
 
       logger.info(
-        `User authenticated with wallet: ${publicKey}, uid: ${existingUser.uid}`
+        `User authenticated with wallet: ${walletAddress}, uid: ${existingUser.uid}`
       );
       return {
         uid: existingUser.uid,
@@ -122,7 +144,7 @@ const unifiedWalletAuth = async (publicKey, username = null) => {
     await db.collection("users").doc(userRecord.uid).set({
       uid: userRecord.uid,
       username: username,
-      walletAddress: publicKey,
+      walletAddress: walletAddress,
       isAnonymous: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
@@ -133,7 +155,7 @@ const unifiedWalletAuth = async (publicKey, username = null) => {
     const customToken = await admin.auth().createCustomToken(userRecord.uid);
 
     logger.info(
-      `New user created with wallet: ${publicKey}, uid: ${userRecord.uid}${
+      `New user created with wallet: ${walletAddress}, uid: ${userRecord.uid}${
         username ? ", username: " + username : ""
       }`
     );
@@ -144,34 +166,35 @@ const unifiedWalletAuth = async (publicKey, username = null) => {
       username: username,
     };
   } catch (error) {
-    logger.error(`Error authenticating with wallet ${publicKey}:`, error);
+    logger.error(`Error authenticating with wallet ${walletAddress}:`, error);
     throw error;
   }
 };
 
 /**
- * Link a Solana wallet to a user account
+ * Link a wallet to a user account
  * @param {string} uid - The user ID
- * @param {string} publicKey - The Solana wallet public key
+ * @param {string} walletAddress - The wallet address
  * @returns {Promise<boolean>} Success status
  */
-const linkWalletToUser = async (uid, publicKey) => {
+const linkWalletToUser = async (uid, walletAddress) => {
   try {
-    // Validate public key format
-    new PublicKey(publicKey);
+    if (!walletAddress) {
+      throw new Error("Wallet address is required");
+    }
 
     // Check if wallet is already linked to another user
     const db = admin.firestore();
     const walletQuery = await db
       .collection("users")
-      .where("walletAddress", "==", publicKey)
+      .where("walletAddress", "==", walletAddress)
       .get();
 
     if (!walletQuery.empty) {
       const existingUser = walletQuery.docs[0].data();
       if (existingUser.uid !== uid) {
         logger.warn(
-          `Wallet ${publicKey} already linked to user ${existingUser.uid}`
+          `Wallet ${walletAddress} already linked to user ${existingUser.uid}`
         );
         throw new Error("Wallet already linked to another user");
       }
@@ -181,13 +204,13 @@ const linkWalletToUser = async (uid, publicKey) => {
 
     // Update user document with wallet info
     await db.collection("users").doc(uid).update({
-      walletAddress: publicKey,
+      walletAddress: walletAddress,
       isAnonymous: false,
       walletLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    logger.info(`Wallet ${publicKey} linked to user ${uid}`);
+    logger.info(`Wallet ${walletAddress} linked to user ${uid}`);
     return true;
   } catch (error) {
     logger.error(`Error linking wallet to user ${uid}:`, error);
@@ -228,58 +251,16 @@ const updateUsername = async (uid, username) => {
 };
 
 /**
- * Verify a Solana wallet signature
- * @param {string} message - The original message that was signed
- * @param {string} signature - The base64 encoded signature
- * @param {string} publicKey - The Solana wallet public key
- * @param {object} connection - The Solana connection object
- * @returns {Promise<boolean>} Whether the signature is valid
- */
-const verifyWalletSignature = async (
-  message,
-  signature,
-  publicKey,
-  connection
-) => {
-  try {
-    // Validate public key
-    const pubKey = new PublicKey(publicKey);
-
-    // Convert message to bytes
-    const messageBytes = new TextEncoder().encode(message);
-
-    // Convert signature from base64
-    const signatureBytes = Buffer.from(signature, "base64");
-
-    // Verify signature
-    const isValid = await connection.verifySignature(
-      messageBytes,
-      signatureBytes,
-      pubKey
-    );
-
-    if (!isValid) {
-      logger.warn(`Invalid signature for wallet ${publicKey}`);
-    }
-
-    return isValid;
-  } catch (error) {
-    logger.error("Error verifying wallet signature:", error);
-    throw error;
-  }
-};
-
-/**
  * Get a user by their wallet address
- * @param {string} publicKey - The Solana wallet public key
+ * @param {string} walletAddress - The wallet address
  * @returns {Promise<object|null>} The user document or null if not found
  */
-const getUserByWallet = async (publicKey) => {
+const getUserByWallet = async (walletAddress) => {
   try {
     const db = admin.firestore();
-    const snapshot = await db
-      .collection("users")
-      .where("walletAddress", "==", publicKey)
+    const usersRef = db.collection("users");
+    const snapshot = await usersRef
+      .where("walletAddress", "==", walletAddress)
       .limit(1)
       .get();
 
@@ -289,15 +270,15 @@ const getUserByWallet = async (publicKey) => {
 
     return snapshot.docs[0].data();
   } catch (error) {
-    logger.error(`Error getting user by wallet ${publicKey}:`, error);
+    logger.error(`Error getting user by wallet: ${walletAddress}`, error);
     throw error;
   }
 };
 
 /**
- * Update the last active timestamp for a user
+ * Update a user's last active timestamp
  * @param {string} uid - The user ID
- * @returns {Promise<void>}
+ * @returns {Promise<boolean>} Success status
  */
 const updateUserLastActive = async (uid) => {
   try {
@@ -305,7 +286,7 @@ const updateUserLastActive = async (uid) => {
     await db.collection("users").doc(uid).update({
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
     });
-    logger.debug(`Updated last active timestamp for user ${uid}`);
+    return true;
   } catch (error) {
     logger.error(`Error updating last active for user ${uid}:`, error);
     throw error;
@@ -320,27 +301,28 @@ const updateUserLastActive = async (uid) => {
 const getUserById = async (uid) => {
   try {
     const db = admin.firestore();
-    const userDoc = await db.collection("users").doc(uid).get();
+    const userRef = db.collection("users").doc(uid);
+    const doc = await userRef.get();
 
-    if (!userDoc.exists) {
+    if (!doc.exists) {
       return null;
     }
 
-    return userDoc.data();
+    return doc.data();
   } catch (error) {
-    logger.error(`Error getting user by ID ${uid}:`, error);
+    logger.error(`Error getting user by ID: ${uid}`, error);
     throw error;
   }
 };
 
 module.exports = {
+  isUsernameExists,
+  isWalletExists,
   createAnonymousUser,
   unifiedWalletAuth,
   linkWalletToUser,
-  verifyWalletSignature,
+  updateUsername,
   getUserByWallet,
   updateUserLastActive,
   getUserById,
-  updateUsername,
-  isUsernameExists,
 };

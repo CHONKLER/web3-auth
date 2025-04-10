@@ -1,11 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const { Connection } = require("@solana/web3.js");
 const logger = require("../utils/logger");
 const authUtils = require("../utils/auth.utils");
-
-// Initialize Solana connection
-const solanaConnection = new Connection("https://api.mainnet-beta.solana.com");
 
 // Error handling middleware
 const handleError = (res, error, message = "An error occurred") => {
@@ -43,40 +39,25 @@ router.post("/anonymous", async (req, res) => {
   }
 });
 
-// Unified Wallet Authentication
+// Unified Wallet Authentication - updated to use wallet address directly
 router.post("/wallet/connect", async (req, res) => {
   try {
-    const { publicKey, signature, message, username } = req.body;
+    const { walletAddress, username } = req.body;
 
-    if (!publicKey || !signature || !message) {
+    if (!walletAddress) {
       return res.status(400).json({
         success: false,
-        message: "Public key, signature, and message are required",
+        message: "Wallet address is required",
       });
     }
 
-    // Verify the signature
-    const isValid = await authUtils.verifyWalletSignature(
-      message,
-      signature,
-      publicKey,
-      solanaConnection
-    );
-
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid signature",
-      });
-    }
-
-    // Unified wallet authentication (login existing or create new)
+    // No need to verify signature, just use the wallet address directly
     const {
       uid,
       token,
       isNewUser,
       username: existingUsername,
-    } = await authUtils.unifiedWalletAuth(publicKey, username);
+    } = await authUtils.unifiedWalletAuth(walletAddress, username);
 
     res.status(200).json({
       success: true,
@@ -100,40 +81,25 @@ router.post("/wallet/connect", async (req, res) => {
   }
 });
 
-// Link Wallet to Existing User
+// Link Wallet to Existing User - updated to use wallet address directly
 router.post("/wallet/link", async (req, res) => {
   try {
-    const { publicKey, signature, message, uid } = req.body;
+    const { walletAddress, uid } = req.body;
 
-    if (!publicKey || !signature || !message || !uid) {
+    if (!walletAddress || !uid) {
       return res.status(400).json({
         success: false,
-        message: "Public key, signature, message, and user ID are required",
+        message: "Wallet address and user ID are required",
       });
     }
 
-    // Verify the signature
-    const isValid = await authUtils.verifyWalletSignature(
-      message,
-      signature,
-      publicKey,
-      solanaConnection
-    );
-
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid signature",
-      });
-    }
-
-    // Link wallet to user
-    await authUtils.linkWalletToUser(uid, publicKey);
+    // Link wallet to user directly without signature verification
+    await authUtils.linkWalletToUser(uid, walletAddress);
 
     res.status(200).json({
       success: true,
       message: "Wallet connected successfully",
-      publicKey: publicKey,
+      walletAddress: walletAddress,
     });
   } catch (error) {
     if (error.message === "Wallet already linked to another user") {
@@ -252,13 +218,52 @@ router.get("/user/:uid", async (req, res) => {
   }
 });
 
-// Health check endpoint
-router.get("/health", (req, res) => {
-  res.status(200).json({
-    success: true,
-    status: "ok",
-    timestamp: new Date().toISOString(),
-  });
+// Check username availability
+router.get("/username/available/:username", async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    if (!username) {
+      return res.status(400).json({
+        success: false,
+        message: "Username is required",
+      });
+    }
+
+    // Check if username exists
+    const exists = await authUtils.isUsernameExists(username);
+
+    res.status(200).json({
+      success: true,
+      available: !exists,
+    });
+  } catch (error) {
+    handleError(res, error, "Failed to check username availability");
+  }
+});
+
+// Add endpoint to check wallet availability
+router.get("/wallet/available/:walletAddress", async (req, res) => {
+  try {
+    const { walletAddress } = req.params;
+
+    if (!walletAddress) {
+      return res.status(400).json({
+        success: false,
+        message: "Wallet address is required",
+      });
+    }
+
+    // Check if wallet address exists
+    const exists = await authUtils.isWalletExists(walletAddress);
+
+    res.status(200).json({
+      success: true,
+      available: !exists,
+    });
+  } catch (error) {
+    handleError(res, error, "Failed to check wallet availability");
+  }
 });
 
 module.exports = router;

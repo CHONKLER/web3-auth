@@ -1,11 +1,11 @@
 # Web3 Authentication Server
 
-A Node.js/Express server that handles authentication through Firebase anonymous login and Solana wallet connection.
+A Node.js/Express server that handles authentication through Firebase anonymous login and wallet connection.
 
 ## Features
 
 - Firebase Anonymous Authentication (with optional username)
-- Solana Wallet Authentication (direct flow)
+- Wallet Address Authentication (direct flow without signature verification)
 - Wallet linking to anonymous accounts
 - Username management with uniqueness validation
 - Secure API endpoints
@@ -17,7 +17,6 @@ A Node.js/Express server that handles authentication through Firebase anonymous 
 - Node.js (v14 or higher)
 - npm (v6 or higher)
 - Firebase project with Admin SDK credentials
-- Solana wallet (for testing)
 
 ## Setup
 
@@ -88,17 +87,7 @@ const signInAnonymously = async (username = null) => {
 
 ```javascript
 // Link wallet to an existing anonymous account
-const linkWallet = async (uid) => {
-  const { publicKey } = await window.solana.connect();
-
-  // Create message to sign
-  const message = "Sign this message to connect your wallet";
-
-  // Sign message
-  const encodedMessage = new TextEncoder().encode(message);
-  const signedMessage = await window.solana.signMessage(encodedMessage);
-  const signature = Buffer.from(signedMessage.signature).toString("base64");
-
+const linkWallet = async (uid, walletAddress) => {
   // Send to backend
   const response = await fetch("http://localhost:3589/api/auth/wallet/link", {
     method: "POST",
@@ -106,9 +95,7 @@ const linkWallet = async (uid) => {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      publicKey: publicKey.toString(),
-      signature,
-      message,
+      walletAddress,
       uid, // From anonymous sign-in
     }),
   });
@@ -121,19 +108,8 @@ const linkWallet = async (uid) => {
 
 ```javascript
 // Authenticate with wallet (login existing or create new)
-const connectWallet = async (username = null) => {
+const connectWallet = async (walletAddress, username = null) => {
   try {
-    // Connect to wallet
-    const { publicKey } = await window.solana.connect();
-
-    // Create message to sign
-    const message = "Sign this message to authenticate";
-
-    // Sign message
-    const encodedMessage = new TextEncoder().encode(message);
-    const signedMessage = await window.solana.signMessage(encodedMessage);
-    const signature = Buffer.from(signedMessage.signature).toString("base64");
-
     // Send to backend
     const response = await fetch(
       "http://localhost:3589/api/auth/wallet/connect",
@@ -143,9 +119,7 @@ const connectWallet = async (username = null) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          publicKey: publicKey.toString(),
-          signature,
-          message,
+          walletAddress,
           username, // Optional
         }),
       }
@@ -182,17 +156,17 @@ const connectWallet = async (username = null) => {
 - `POST /api/auth/wallet/connect`
 
   - Unified wallet authentication endpoint (sign in or create new)
-  - Request body: `{ publicKey: string, signature: string, message: string, username?: string }`
+  - Request body: `{ walletAddress: string, username?: string }`
   - Response: `{ success: true, token: string, uid: string, isNewUser: boolean, username: string|null, message: string }`
   - Error responses:
-    - `400 Bad Request`: If username already exists or signature is invalid
+    - `400 Bad Request`: If username already exists
     - `500 Internal Server Error`: For other errors
 
 - `POST /api/auth/wallet/link`
 
-  - Links a Solana wallet to an existing user account
-  - Request body: `{ publicKey: string, signature: string, message: string, uid: string }`
-  - Response: `{ success: true, message: string, publicKey: string }`
+  - Links a wallet to an existing user account
+  - Request body: `{ walletAddress: string, uid: string }`
+  - Response: `{ success: true, message: string, walletAddress: string }`
 
 - `POST /api/auth/username`
 
@@ -214,9 +188,14 @@ const connectWallet = async (username = null) => {
   - Gets user profile information
   - Response: `{ success: true, user: { uid, username, isAnonymous, hasWallet, walletAddress, createdAt, lastActive, walletLinkedAt } }`
 
-- `GET /api/auth/health`
-  - Health check endpoint
-  - Response: `{ success: true, status: string, timestamp: string }`
+- `GET /api/auth/username/available/:username`
+
+  - Checks if a username is available
+  - Response: `{ success: true, available: boolean }`
+
+- `GET /api/auth/wallet/available/:walletAddress`
+  - Checks if a wallet address is available
+  - Response: `{ success: true, available: boolean }`
 
 ## Authentication Flows
 
@@ -229,17 +208,36 @@ const connectWallet = async (username = null) => {
 
 ### 2. Wallet Connection Flow
 
-1. User connects their wallet
-2. Server checks if wallet exists
+1. User connects their wallet on the frontend
+2. Frontend sends the wallet address to the server
+3. Server checks if wallet exists
    - If exists: Logs in the user
    - If not: Creates new account
-3. Returns `uid`, `token`, and `isNewUser` flag
+4. Returns `uid`, `token`, and `isNewUser` flag
 
 ### 3. Hybrid Flow
 
 1. User starts with anonymous account
 2. Later links their wallet
 3. Account becomes non-anonymous
+
+## Key Changes in Recent Updates
+
+1. **Removed @solana/web3.js Dependency**: The backend no longer depends on Solana's web3.js library as wallet management is handled on the frontend.
+
+2. **Simplified Authentication Flow**: Wallet authentication now uses direct wallet addresses without needing signature verification:
+
+   - Frontend is responsible for connecting to wallets and obtaining addresses
+   - Backend only needs the wallet address to authenticate or create users
+
+3. **Unique User Identification**: Implemented checks for both username and wallet address:
+
+   - Before creating a new account, the system checks if the wallet address or username already exists
+   - If a user already exists with that wallet, they are signed in rather than creating a duplicate account
+
+4. **New Availability Endpoints**: Added endpoints to check if usernames or wallet addresses are already taken:
+   - `GET /api/auth/username/available/:username`
+   - `GET /api/auth/wallet/available/:walletAddress`
 
 ## Firestore Security Rules
 
@@ -288,30 +286,24 @@ Here's how to integrate wallet connection in your frontend application:
 ```javascript
 const connectWallet = async () => {
   try {
-    // Connect to wallet
-    const { publicKey } = await window.solana.connect();
-
-    // Create message to sign
-    const message = "Sign this message to connect your wallet";
-
-    // Sign message
-    const encodedMessage = new TextEncoder().encode(message);
-    const signedMessage = await window.solana.signMessage(encodedMessage);
-    const signature = Buffer.from(signedMessage.signature).toString("base64");
+    // Connect to wallet using your frontend library
+    // This will be specific to your frontend wallet integration
+    const walletAddress = "your-wallet-address";
 
     // Send to backend
-    const response = await fetch("http://localhost:3589/api/auth/wallet", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        publicKey: publicKey.toString(),
-        signature,
-        message,
-        uid: "your-user-id", // Get this from anonymous sign-in
-      }),
-    });
+    const response = await fetch(
+      "http://localhost:3589/api/auth/wallet/connect",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          walletAddress,
+          username: "optional-username", // Optional
+        }),
+      }
+    );
 
     const data = await response.json();
     console.log(data);

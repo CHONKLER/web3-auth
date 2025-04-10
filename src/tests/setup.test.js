@@ -1,6 +1,5 @@
 require("dotenv").config();
 const admin = require("firebase-admin");
-const { Connection } = require("@solana/web3.js");
 const logger = require("../utils/logger");
 
 // Initialize Firebase Admin
@@ -62,27 +61,12 @@ async function testFirebaseSetup() {
   }
 }
 
-async function testSolanaConnection() {
-  try {
-    const connection = new Connection("https://api.mainnet-beta.solana.com");
-    const version = await connection.getVersion();
-
-    logger.info("Solana connection test passed successfully");
-    logger.info("Solana node version:", version);
-    return true;
-  } catch (error) {
-    logger.error("Solana connection test failed:", error);
-    return false;
-  }
-}
-
 async function runTests() {
   logger.info("Starting setup tests...");
 
   const firebaseResult = await testFirebaseSetup();
-  const solanaResult = await testSolanaConnection();
 
-  if (firebaseResult && solanaResult) {
+  if (firebaseResult) {
     logger.info("All setup tests passed successfully!");
     process.exit(0);
   } else {
