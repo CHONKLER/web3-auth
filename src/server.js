@@ -17,7 +17,14 @@ logger.debug(`Port: ${PORT}`);
 
 // Middleware
 app.use(helmet());
-app.use(cors());
+// Configure CORS to allow requests from all origins
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
