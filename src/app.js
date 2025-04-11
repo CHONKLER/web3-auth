@@ -4,11 +4,20 @@ require("dotenv").config();
 const express = require("express");
 const admin = require("firebase-admin");
 const path = require("path");
+const cors = require("cors");
 const app = express();
 
 // Middleware for parsing JSON and urlencoded data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// Configure CORS to allow requests from all origins
+app.use(
+  cors({
+    origin: ["http://localhost:3000", "http://localhost:5173", "*"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 // Initialize Firebase Admin with environment variables
 try {
