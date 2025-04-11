@@ -59,6 +59,15 @@ const authRoutes = require("./routes/auth.routes");
 // Use routes
 app.use("/api/auth", authRoutes);
 
+// Base route
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "Web3 Auth API is running correctly",
+    version: "1.0.0",
+  });
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok" });
