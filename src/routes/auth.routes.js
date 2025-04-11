@@ -18,6 +18,15 @@ router.post("/authenticate", async (req, res) => {
   try {
     const { walletAddress, username } = req.body;
 
+    // Log the authentication request for debugging
+    logger.info(
+      `Authentication request: username=${username || "none"}, walletAddress=${
+        walletAddress
+          ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
+          : "none"
+      }`
+    );
+
     // If wallet provided, check for username mismatch first
     if (walletAddress && username) {
       const existingUser = await authUtils.getUserByWallet(walletAddress);
@@ -26,9 +35,11 @@ router.post("/authenticate", async (req, res) => {
           `User attempted to use wallet ${walletAddress} with username '${username}' but it's already linked to '${existingUser.username}'`
         );
 
-      return res.status(400).json({
-        success: false,
-          message: `This wallet address is already linked to username. Please use the correct username or create a new account.`,
+        return res.status(400).json({
+          success: false,
+          message: `This wallet address is already linked to username '${
+            existingUser.username || "none"
+          }'. Please use the correct username or create a new account.`,
           error: "WALLET_LINKED_TO_DIFFERENT_USERNAME",
           existingUsername: existingUser.username || null,
         });
@@ -85,12 +96,15 @@ router.post("/authenticate", async (req, res) => {
       });
     } else if (
       error.message &&
-      error.message.includes("Properties argument must be")
+      (error.message.includes("Properties argument must be") ||
+        error.message.includes("Invalid data format for user creation"))
     ) {
       // Handle Firebase-specific error for invalid document updates
+      logger.error("Invalid data format error:", error);
       return res.status(400).json({
         success: false,
-        message: "Invalid data provided for authentication",
+        message:
+          "Invalid data provided for authentication. Please check your username and wallet address format.",
         error: "INVALID_DATA_FORMAT",
       });
     } else if (error.message && error.message.includes("Invalid user ID")) {
@@ -431,8 +445,8 @@ router.post("/wallet/connect", async (req, res) => {
       authType,
     } = await authUtils.unifiedWalletAuth(walletAddress, username);
 
-  res.status(200).json({
-    success: true,
+    res.status(200).json({
+      success: true,
       token,
       uid,
       isNewUser,

@@ -292,42 +292,52 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
       }
     }
 
-    // Create a new user
-    const userRecord = await admin.auth().createUser();
+    try {
+      // Create a new user
+      const userRecord = await admin.auth().createUser({});
 
-    // Create user document in Firestore
-    const userData = {
-      uid: userRecord.uid,
-      username: username,
-      isAnonymous: isAnonymous,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastActive: admin.firestore.FieldValue.serverTimestamp(),
-    };
+      // Create user document in Firestore
+      const userData = {
+        uid: userRecord.uid,
+        username: username,
+        isAnonymous: isAnonymous,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastActive: admin.firestore.FieldValue.serverTimestamp(),
+      };
 
-    // Only add wallet-related fields if a wallet is provided
-    if (walletAddress) {
-      userData.walletAddress = walletAddress;
-      userData.walletLinkedAt = admin.firestore.FieldValue.serverTimestamp();
+      // Only add wallet-related fields if a wallet is provided
+      if (walletAddress) {
+        userData.walletAddress = walletAddress;
+        userData.walletLinkedAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+
+      await db.collection("users").doc(userRecord.uid).set(userData);
+
+      // Generate custom token
+      const customToken = await admin.auth().createCustomToken(userRecord.uid);
+
+      logger.info(
+        `New user created ${
+          walletAddress ? `with wallet: ${walletAddress}` : "anonymously"
+        }, uid: ${userRecord.uid}${username ? ", username: " + username : ""}`
+      );
+
+      return {
+        uid: userRecord.uid,
+        token: customToken,
+        isNewUser: true,
+        username: username,
+        authType: walletAddress ? "wallet" : "anonymous",
+      };
+    } catch (error) {
+      logger.error(`Error creating new user: ${error.message}`);
+      if (error.code === "auth/invalid-argument") {
+        throw new Error(
+          "Invalid data format for user creation. Please check your username and wallet address."
+        );
+      }
+      throw error;
     }
-
-    await db.collection("users").doc(userRecord.uid).set(userData);
-
-    // Generate custom token
-    const customToken = await admin.auth().createCustomToken(userRecord.uid);
-
-    logger.info(
-      `New user created ${
-        walletAddress ? `with wallet: ${walletAddress}` : "anonymously"
-      }, uid: ${userRecord.uid}${username ? ", username: " + username : ""}`
-    );
-
-    return {
-      uid: userRecord.uid,
-      token: customToken,
-      isNewUser: true,
-      username: username,
-      authType: walletAddress ? "wallet" : "anonymous",
-    };
   } catch (error) {
     logger.error(
       `Error authenticating user${
