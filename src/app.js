@@ -10,12 +10,41 @@ const app = express();
 // Middleware for parsing JSON and urlencoded data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-// Configure CORS to allow requests from all origins
+
+// Configure CORS to allow specific origins and handle credentials properly
 app.use(
   cors({
-    origin: ["http://localhost:3000", "http://localhost:5173", "*"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps, curl, postman)
+      if (!origin) return callback(null, true);
+
+      // List of allowed origins
+      const allowedOrigins = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
+      ];
+
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
+    exposedHeaders: ["Content-Range", "X-Content-Range"],
+    credentials: false, // Changed to false since we're not using cookies/sessions
+    preflightContinue: false,
+    optionsSuccessStatus: 204,
+    maxAge: 3600, // Reduced cache time to 1 hour for development
   })
 );
 

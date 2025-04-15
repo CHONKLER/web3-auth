@@ -2,7 +2,6 @@
 require("dotenv").config();
 
 const express = require("express");
-const cors = require("cors");
 const morgan = require("morgan");
 const helmet = require("helmet");
 const app = require("./app");
@@ -16,15 +15,13 @@ logger.debug(`Firebase Project ID: ${process.env.FIREBASE_PROJECT_ID}`);
 logger.debug(`Port: ${PORT}`);
 
 // Middleware
-app.use(helmet());
-// Configure CORS to allow requests from all origins
 app.use(
-  cors({
-    origin: ["http://localhost:3000", "http://localhost:5173", "*"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "unsafe-none" },
   })
 );
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));

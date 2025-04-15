@@ -237,14 +237,34 @@ router.post("/logout", async (req, res) => {
       });
     }
 
-    // Update last active timestamp
+    // Update last active timestamp and handle logout
     await authUtils.updateUserLastActive(uid);
 
     res.status(200).json({
       success: true,
       message: "Logged out successfully",
+      instructions: "Please clear any stored tokens from your client storage",
     });
   } catch (error) {
+    logger.error("Logout error:", error);
+
+    if (error.message === "User ID is required") {
+      return res.status(400).json({
+        success: false,
+        message: error.message,
+        error: "MISSING_USER_ID",
+      });
+    } else if (
+      error.message &&
+      error.message.includes("No document to update")
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+        error: "USER_NOT_FOUND",
+      });
+    }
+
     handleError(res, error, "Failed to logout");
   }
 });

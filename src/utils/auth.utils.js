@@ -168,6 +168,7 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
     const db = admin.firestore();
     let existingUser = null;
     let isAnonymous = !walletAddress;
+    let firebaseAuthUid = null;
 
     // If wallet provided, check if a user with this wallet already exists
     if (walletAddress) {
@@ -192,12 +193,14 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
 
         // User exists, generate a token for them
         const userId = existingUser.uid || existingUser.id;
+        firebaseAuthUid = userId;
 
         // Make sure userId is a valid string to avoid Firebase errors
         if (!userId || typeof userId !== "string") {
           throw new Error(`Invalid user ID: ${userId}`);
         }
 
+        // Create a custom token for Firebase Auth
         const customToken = await admin.auth().createCustomToken(userId);
 
         // Just update last active timestamp - don't touch any other fields
@@ -239,6 +242,8 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
         } else {
           // First time linking a wallet to this username
           const userId = existingUser.uid || existingUser.id;
+          firebaseAuthUid = userId;
+
           await db.collection("users").doc(userId).update({
             walletAddress: walletAddress,
             isAnonymous: false,
@@ -255,12 +260,14 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
     if (existingUser) {
       // User exists, generate a token for them
       const userId = existingUser.uid || existingUser.id;
+      firebaseAuthUid = userId;
 
       // Make sure userId is a valid string to avoid Firebase errors
       if (!userId || typeof userId !== "string") {
         throw new Error(`Invalid user ID: ${userId}`);
       }
 
+      // Create a custom token for Firebase Auth
       const customToken = await admin.auth().createCustomToken(userId);
 
       // Update last active timestamp
@@ -293,12 +300,26 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
     }
 
     try {
-      // Create a new user
-      const userRecord = await admin.auth().createUser({});
+      // Create a new user in Firebase Auth first
+      let authUser;
+
+      if (isAnonymous) {
+        // Create an anonymous user in Firebase Auth
+        authUser = await admin.auth().createUser({
+          disabled: false,
+        });
+      } else {
+        // Create a regular user in Firebase Auth
+        authUser = await admin.auth().createUser({
+          disabled: false,
+        });
+      }
+
+      firebaseAuthUid = authUser.uid;
 
       // Create user document in Firestore
       const userData = {
-        uid: userRecord.uid,
+        uid: authUser.uid,
         username: username,
         isAnonymous: isAnonymous,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -311,19 +332,19 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
         userData.walletLinkedAt = admin.firestore.FieldValue.serverTimestamp();
       }
 
-      await db.collection("users").doc(userRecord.uid).set(userData);
+      await db.collection("users").doc(authUser.uid).set(userData);
 
-      // Generate custom token
-      const customToken = await admin.auth().createCustomToken(userRecord.uid);
+      // Generate custom token for Firebase Auth
+      const customToken = await admin.auth().createCustomToken(authUser.uid);
 
       logger.info(
         `New user created ${
           walletAddress ? `with wallet: ${walletAddress}` : "anonymously"
-        }, uid: ${userRecord.uid}${username ? ", username: " + username : ""}`
+        }, uid: ${authUser.uid}${username ? ", username: " + username : ""}`
       );
 
       return {
-        uid: userRecord.uid,
+        uid: authUser.uid,
         token: customToken,
         isNewUser: true,
         username: username,
@@ -453,16 +474,28 @@ const getUserByWallet = async (walletAddress) => {
 };
 
 /**
- * Update a user's last active timestamp
+ * Update a user's last active timestamp and handle logout
  * @param {string} uid - The user ID
  * @returns {Promise<boolean>} Success status
  */
 const updateUserLastActive = async (uid) => {
   try {
+    if (!uid) {
+      throw new Error("User ID is required");
+    }
+
+    // Update Firestore user document
     const db = admin.firestore();
     await db.collection("users").doc(uid).update({
       lastActive: admin.firestore.FieldValue.serverTimestamp(),
+      lastLogout: admin.firestore.FieldValue.serverTimestamp(),
     });
+
+    // We don't actually revoke Firebase tokens here since Firebase doesn't provide a direct
+    // way to invalidate custom tokens. Instead, we rely on token expiration.
+    // The frontend should clear tokens from storage on logout.
+
+    logger.info(`User ${uid} logged out successfully`);
     return true;
   } catch (error) {
     logger.error(`Error updating last active for user ${uid}:`, error);
