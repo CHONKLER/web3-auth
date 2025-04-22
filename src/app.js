@@ -7,7 +7,7 @@ const path = require("path");
 const cors = require("cors");
 const app = express();
 
-// Middleware for parsing JSON and urlencoded data
+// Middleware for parsing JSON and URL-encoded data
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -24,6 +24,8 @@ app.use(
         "http://localhost:5174",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
+        "https://www.chonklertest.fun/",
+        "https://www.chonkler.fun/",
       ];
 
       if (allowedOrigins.indexOf(origin) !== -1) {
