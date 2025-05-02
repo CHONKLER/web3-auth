@@ -67,31 +67,8 @@ const createAnonymousUser = async (username = null) => {
       );
 
       if (existingUser) {
-        // User with this username already exists, generate a token for them
-        const customToken = await admin
-          .auth()
-          .createCustomToken(existingUser.uid || existingUser.id);
-
-        // Update last active timestamp
-        const db = admin.firestore();
-        await db
-          .collection("users")
-          .doc(existingUser.uid || existingUser.id)
-          .update({
-            lastActive: admin.firestore.FieldValue.serverTimestamp(),
-          });
-
-        logger.info(
-          `User logged in with existing username: ${username}, uid: ${
-            existingUser.uid || existingUser.id
-          }`
-        );
-        return {
-          uid: existingUser.uid || existingUser.id,
-          token: customToken,
-          username: existingUser.username,
-          isExistingUser: true,
-        };
+        // Instead of generating a token for existing user, throw an error
+        throw new Error(`Username '${username}' is already taken`);
       }
     }
 
@@ -251,9 +228,25 @@ const unifiedWalletAuth = async (walletAddress = null, username = null) => {
             walletLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
           });
 
-          // Refresh user data after update
-          existingUser = await getUserById(userId);
+          // Create a custom token for Firebase Auth
+          const customToken = await admin.auth().createCustomToken(userId);
+
+          logger.info(
+            `Linked wallet to existing user: ${walletAddress}, uid: ${userId}, username: ${username}`
+          );
+
+          return {
+            uid: userId,
+            token: customToken,
+            isNewUser: false,
+            username: existingUser.username || null,
+            authType: "wallet",
+          };
         }
+      }
+      // If user with this username exists but no wallet, throw error as username is already taken
+      else if (existingUser && !walletAddress) {
+        throw new Error(`Username '${username}' is already taken`);
       }
     }
 
