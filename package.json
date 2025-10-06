@@ -25,6 +25,8 @@
     "firebase-admin": "^11.11.1",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
+    "plaiceholder": "^3.0.0",
+    "sharp": "^0.34.4",
     "winston": "^3.11.0"
   },
   "devDependencies": {

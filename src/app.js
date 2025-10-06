@@ -52,6 +52,7 @@ try {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`,
+    storageBucket: `${process.env.FIREBASE_PROJECT_ID}.appspot.com`,
   });
 
   console.log("Firebase Admin initialized successfully");
@@ -67,9 +68,11 @@ db.settings({ timestampsInSnapshots: true });
 
 // Import routes
 const authRoutes = require("./routes/auth.routes");
+const mediaRoutes = require("./routes/media.routes");
 
 // Use routes
 app.use("/api/auth", authRoutes);
+app.use("/api/media", mediaRoutes);
 
 // Base route
 app.get("/", (req, res) => {
