@@ -69,10 +69,12 @@ db.settings({ timestampsInSnapshots: true });
 // Import routes
 const authRoutes = require("./routes/auth.routes");
 const mediaRoutes = require("./routes/media.routes");
+const compressRoutes = require("./routes/compress.routes")
 
 // Use routes
 app.use("/api/auth", authRoutes);
 app.use("/api/media", mediaRoutes);
+app.use("/api/compress", compressRoutes);
 
 // Base route
 app.get("/", (req, res) => {
